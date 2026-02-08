@@ -9,7 +9,7 @@ ByteSurgeon is a 64-bit ELF binary editor that lets you locate and modify string
 -Simple command-line interface.
 
 ## Usage
-./ByteSurgeon <binary_file>
+./ByteSurgeon binary_file
 
 Lists all detected strings with indexes.
 
@@ -17,4 +17,4 @@ Choose the index of the string to modify.
 
 Enter the new string (must be same length or shorter).
 
-A patched binary <original>_patched will be created.
+A patched binary original_patched will be created.
