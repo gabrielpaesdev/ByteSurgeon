@@ -16,49 +16,12 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <elf.h>
-
-#define MIN_STR 4
-#define MAX_STRINGS 1024
-
-int is_printable(unsigned char c) {
-    return (c >= 32 && c <= 126);
-}
-
-void scan_section(unsigned char *data, long offset, long size,
-                  long *offsets, char **strings, int *count) {
-
-    for (long i = 0; i < size; i++) {
-        unsigned char c = data[offset + i];
-
-        if (is_printable(c)) {
-            long start = i;
-
-            while (i < size && is_printable(data[offset + i]))
-                i++;
-
-            long len = i - start;
-
-            if (len >= MIN_STR && i < size && data[offset + i] == 0) {
-                if (*count >= MAX_STRINGS)
-                    return;
-
-                strings[*count] = malloc(len + 1);
-                memcpy(strings[*count], &data[offset + start], len);
-                strings[*count][len] = 0;
-
-                offsets[*count] = offset + start;
-                printf("[%d] %s\n", *count, strings[*count]);
-                (*count)++;
-            }
-        }
-    }
-}
+#include "scanner.h"
+#include "patcher.h"
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -77,12 +40,30 @@ int main(int argc, char *argv[]) {
     rewind(f);
 
     unsigned char *data = malloc(filesize);
+    if (!data) {
+        perror("Memory allocation failed");
+        fclose(f);
+        return 1;
+    }
+    
     fread(data, 1, filesize, f);
     fclose(f);
 
     Elf64_Ehdr *eh = (Elf64_Ehdr *)data;
-    Elf64_Shdr *sh = (Elf64_Shdr *)(data + eh->e_shoff);
 
+    if (filesize < sizeof(Elf64_Ehdr) || memcmp(eh->e_ident, ELFMAG, SELFMAG) != 0) {
+        printf("Error: File is not a valid ELF binary.\n");
+        free(data);
+        return 1;
+    }
+    
+    if (eh->e_ident[EI_CLASS] != ELFCLASS64) {
+        printf("Error: ByteSurgeon only supports 64-bit ELF binaries.\n");
+        free(data);
+        return 1;
+    }
+
+    Elf64_Shdr *sh = (Elf64_Shdr *)(data + eh->e_shoff);
     Elf64_Shdr *shstr = &sh[eh->e_shstrndx];
     const char *shstrtab = (const char *)(data + shstr->sh_offset);
 
@@ -94,23 +75,30 @@ int main(int argc, char *argv[]) {
         const char *name = shstrtab + sh[i].sh_name;
 
         if (strcmp(name, ".rodata") == 0 || strcmp(name, ".data") == 0) {
-            scan_section(data, sh[i].sh_offset, sh[i].sh_size,
-                         offsets, strings, &count);
+            scan_section(data, sh[i].sh_offset, sh[i].sh_size, offsets, strings, &count);
         }
     }
 
     if (count == 0) {
         printf("No strings found.\n");
+        free(data);
         return 0;
     }
 
     int idx;
     printf("\nWhich index would you like to modify? ");
-    scanf("%d", &idx);
+    if (scanf("%d", &idx) != 1) {
+        printf("Invalid input.\n");
+        for (int i = 0; i < count; i++) free(strings[i]);
+        free(data);
+        return 1;
+    }
     getchar();
 
     if (idx < 0 || idx >= count) {
         printf("Invalid index.\n");
+        for (int i = 0; i < count; i++) free(strings[i]);
+        free(data);
         return 1;
     }
 
@@ -119,25 +107,19 @@ int main(int argc, char *argv[]) {
     fgets(novo, sizeof(novo), stdin);
     novo[strcspn(novo, "\n")] = 0;
 
-    int old_len = strlen(strings[idx]);
-    int new_len = strlen(novo);
-
-    if (new_len > old_len) {
+    if (!apply_patch(data, offsets[idx], strings[idx], novo)) {
         printf("New text is longer than the original. Aborting.\n");
+        for (int i = 0; i < count; i++) free(strings[i]);
+        free(data);
         return 1;
     }
 
-    memcpy(&data[offsets[idx]], novo, new_len);
-    memset(&data[offsets[idx] + new_len], 0, old_len - new_len);
+    save_patched_file(argv[1], data, filesize);
 
-    char outname[256];
-    snprintf(outname, sizeof(outname), "%s_patched", argv[1]);
+    for (int i = 0; i < count; i++) {
+        free(strings[i]);
+    }
+    free(data);
 
-    FILE *out = fopen(outname, "wb");
-    fwrite(data, 1, filesize, out);
-    fclose(out);
-
-    printf("Patch created: %s\n", outname);
     return 0;
 }
-
